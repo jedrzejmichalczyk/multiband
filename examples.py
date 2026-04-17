@@ -109,36 +109,33 @@ def summarise(sol, passbands, stopbands, psi_I_fn, psi_J_fn):
 # -----------------------------------------------------------------------------
 
 def example1():
-    print("\n=== Example 1: 9-3 dual-band (paper Fig. 4 geometry) ===")
+    print("\n=== Example 1: 9-3 dual-band, paper's asymmetric specs ===")
     passbands = [(-1.0, -0.625), (0.25, 1.0)]
     stopbands = [(-10.0, -1.188), (-0.5, 0.125), (1.212, 10.0)]
 
     psi_pass = rl_db_to_psi(20.0)
+    psi_outer = rej_db_to_psi(15.0)
+    psi_mid = rej_db_to_psi(30.0)
 
     def psi_I(w):
         return psi_pass
 
-    # Uniform psi_J = 0 (pure Zolotarev problem).  The paper's asymmetric
-    # specs (15 dB / 30 dB) turn out to be at or beyond what is achievable
-    # with a 9-3 filter in this band configuration for most LP normalisations
-    # -- we report instead the maximum uniform rejection level this
-    # algorithm can certify.
     def psi_J(w):
-        return 0.0
+        return psi_mid if (-0.5 <= w <= 0.125) else psi_outer
 
     t0 = time.time()
     sol = solve_zolotarev(
         passbands, stopbands, nF=9, nP=3,
         psi_I=psi_I, psi_J=psi_J,
-        rescale=False, base_samples=60,
-        coef_bound=1e10, bisection_tol=1e-4,
-        verbose=False,
+        rescale=True, method="diffcorr",
+        base_samples=40, coef_bound=1e6,
+        bisection_tol=1e-5, verbose=False,
     )
     print(f"  solved in {time.time() - t0:.2f} s")
     summarise(sol, passbands, stopbands, psi_I, psi_J)
 
     plot_response(
-        sol, title="Example 1: 9-3 dual-band filtering function",
+        sol, title="Example 1: optimal 9-3 (paper asymmetric specs 15/30 dB)",
         filename="example1.png", w_range=(-2.1, 2.1),
         stopbands=stopbands, passbands=passbands,
         psi_I=psi_I, psi_J=psi_J,
@@ -151,32 +148,45 @@ def example1():
 # -----------------------------------------------------------------------------
 
 def example2():
-    print("\n=== Example 2: 7-3 dual-band (paper Fig. 5 geometry) ===")
+    print("\n=== Example 2: 7-3 dual-band, paper's asymmetric specs ===")
     passbands = [(-1.0, -0.383), (0.383, 1.0)]
-    # Merge the two J_1 sub-intervals since we are using uniform psi_J here.
-    stopbands = [(-10.0, -1.864), (-0.037, -0.012), (1.185, 10.0)]
+    J1a = (-10.0, -1.987)
+    J1b = (-1.987, -1.864)
+    J2 = (-0.037, -0.012)
+    J3 = (1.185, 10.0)
+    stopbands = [J1a, J1b, J2, J3]
 
     psi_pass = rl_db_to_psi(23.0)
+    psi_10 = rej_db_to_psi(10.0)
+    psi_15 = rej_db_to_psi(15.0)
+    psi_20 = rej_db_to_psi(20.0)
+    psi_40 = rej_db_to_psi(40.0)
 
     def psi_I(w):
         return psi_pass
 
     def psi_J(w):
-        return 0.0
+        if J1a[0] <= w <= J1a[1]:
+            return psi_10
+        if J1b[0] <= w <= J1b[1]:
+            return psi_15
+        if J2[0] <= w <= J2[1]:
+            return psi_20
+        return psi_40
 
     t0 = time.time()
     sol = solve_zolotarev(
         passbands, stopbands, nF=7, nP=3,
         psi_I=psi_I, psi_J=psi_J,
-        rescale=False, base_samples=60,
-        coef_bound=1e10, bisection_tol=1e-4,
-        verbose=False,
+        rescale=True, method="diffcorr",
+        base_samples=40, coef_bound=1e6,
+        bisection_tol=1e-5, verbose=False,
     )
     print(f"  solved in {time.time() - t0:.2f} s")
     summarise(sol, passbands, stopbands, psi_I, psi_J)
 
     plot_response(
-        sol, title="Example 2: 7-3 dual-band filtering function",
+        sol, title="Example 2: optimal 7-3 (paper asymmetric specs 10/15/20/40 dB)",
         filename="example2.png", w_range=(-2.1, 2.1),
         stopbands=stopbands, passbands=passbands,
         psi_I=psi_I, psi_J=psi_J,

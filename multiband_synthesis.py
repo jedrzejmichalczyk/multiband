@@ -71,29 +71,30 @@ def _cheb_basis_row(x, n):
     return out
 
 
-def _build_lp(I_pts, J_pts, nF, nP, M, psi_I_fn, psi_J_fn, coef_bound):
-    """Assemble the LP of Section V in the CHEBYSHEV basis.
+def _build_lp(I_pts, J_pts, nF, nP, M, psi_I_fn, psi_J_fn, coef_bound,
+              F_ref=None, anchor=None):
+    """Assemble the LP of Section V (paper) in the CHEBYSHEV basis.
 
        max h
-        s.t.   sigma F(y) - (psi + M) P(y) >= h       for y in J   (both signs)
-               sigma F(y) + (psi + M) P(y) >= h       for y in J
-               sigma P(x) >= 0                        for x in I
-               |F(x)| <= sigma psi(x) P(x)            for x in I
+        s.t.   sigma F(y) - (psi + M) |P(y)| >= h |F_ref(y)|   for y in J
+               sigma P(x) >= 0                                 for x in I
+               |F(x)| <= sigma psi(x) P(x)                     for x in I
 
-    Variables (all in Chebyshev basis on a [-1,1] reference interval):
+    Variables (Chebyshev on the rescaled interval):
 
-        [f_0, f_1, ..., f_{nF},   p_0, ..., p_{nP-1},   h]
+        [f_0, ..., f_{nF},   p_0, ..., p_{nP-1},   h]
 
-    with  F(t) = sum_i f_i T_i(t)   and   P(t) = T_{nP}(t) + sum_{i<nP} p_i T_i(t).
+    with  F(t) = sum f_i T_i(t)   and   P(t) = T_nP(t) + sum_{i<nP} p_i T_i(t).
 
-    Fixing  lc_{Cheb}(P) = 1  (coefficient of T_nP is 1) plays the role of
-    the Lunot-Seyfert normalisation lc(P) = 1 in the Chebyshev basis, but
-    with vastly better conditioning when t is already scaled to [-1, 1].
-
-    I_pts, J_pts are lists of (t_sample, sigma) pairs in the scaled variable.
+    The coefficient of T_nP in P is fixed at 1 (the classical
+    Zolotarev lc(P)=1 normalisation, but in Chebyshev basis).
+    Compactness is enforced by wide box bounds on the free coefficients.
+    `F_ref` is the reference polynomial for the quadratic-correction
+    denominator (eq. 14 of the paper); if None, we use rhs=1 (non-quadratic
+    form, eq. 10).
     """
     n_f = nF + 1
-    n_p = nP                       # leading Cheb coefficient fixed to 1
+    n_p = nP
     nvar = n_f + n_p + 1
     h_idx = nvar - 1
 
@@ -106,25 +107,31 @@ def _build_lp(I_pts, J_pts, nF, nP, M, psi_I_fn, psi_J_fn, coef_bound):
     for y, sigma in J_pts:
         psi = psi_J_fn(y)
         Meff = psi + M
-        Fvec = _cheb_basis_row(y, n_f)                 # (nF+1,)
-        Pvec_all = _cheb_basis_row(y, nP + 1)          # (nP+1,)
+        Fvec = _cheb_basis_row(y, n_f)
+        Pvec_all = _cheb_basis_row(y, nP + 1)
         Pvec_low = Pvec_all[:nP] if nP else np.empty(0)
-        P_lead = Pvec_all[nP]                          # T_nP(y)
+        P_lead = Pvec_all[nP]
 
-        # sigma F - Meff P >= h
+        # rhs for h (quadratic correction eq. 14)
+        if F_ref is not None:
+            rhs = max(abs(_cheb_eval(F_ref, y)), 1e-12)
+        else:
+            rhs = 1.0
+
+        # sigma F - Meff P >= h * rhs
         row = np.zeros(nvar)
         row[:n_f] = -sigma * Fvec
         if n_p:
             row[n_f:n_f + n_p] = Meff * Pvec_low
-        row[h_idx] = 1.0
+        row[h_idx] = rhs
         A.append(row); b.append(-Meff * P_lead)
 
-        # sigma F + Meff P >= h
+        # sigma F + Meff P >= h * rhs
         row = np.zeros(nvar)
         row[:n_f] = -sigma * Fvec
         if n_p:
             row[n_f:n_f + n_p] = -Meff * Pvec_low
-        row[h_idx] = 1.0
+        row[h_idx] = rhs
         A.append(row); b.append(Meff * P_lead)
 
     for x, sigma in I_pts:
@@ -161,8 +168,8 @@ def _build_lp(I_pts, J_pts, nF, nP, M, psi_I_fn, psi_J_fn, coef_bound):
 
 
 def _extract_poly(x_sol, nF, nP):
-    """Return (F_cheb, P_cheb), arrays of Chebyshev coefficients ordered by
-    increasing T_k index."""
+    """Return (F_cheb, P_cheb) with the paper's classical lc(P)=1
+    normalisation (coefficient of T_nP in P is 1)."""
     n_f = nF + 1
     n_p = nP
     F = x_sol[:n_f].copy()
@@ -198,19 +205,13 @@ def _initial_samples(intervals, base_count=25):
     return pts
 
 
-def _probe_feasibility(passbands, stopbands, sigma_I, sigma_J, nF, nP,
-                       M, psi_I_fn, psi_J_fn,
-                       coef_bound=1e8, base_samples=25, refine_samples=2000,
-                       max_exchange=8, tol=1e-6, verbose=False):
-    """
-    Return (feasible, h, F, P) for the signed problem at level M.
-
-    The routine solves the LP on a sample grid; then densely samples the
-    continuum, locates the worst constraint violators, adds them to the
-    grid and resolves.  Repeats until the dense grid is also satisfied,
-    which certifies the continuous constraint.
-    """
-    # Interval-level sample caches:   list of (x, sigma)
+def _probe_lp(passbands, stopbands, sigma_I, sigma_J, nF, nP,
+              M, psi_I_fn, psi_J_fn, F_ref=None,
+              coef_bound=1e8, base_samples=25, refine_samples=2000,
+              max_exchange=12, tol=1e-6, verbose=False):
+    """Solve the LP at level M with the given reference F_ref (used in the
+    quadratic-correction denominator of eq. 14).  A Remez-style exchange
+    refines the sample sets until the continuous constraints are valid."""
     I_samples_set = []
     for k, (a, b) in enumerate(passbands):
         for x in _chebyshev_nodes(a, b, max(6, base_samples)):
@@ -227,16 +228,16 @@ def _probe_feasibility(passbands, stopbands, sigma_I, sigma_J, nF, nP,
 
     for it in range(max_exchange):
         res = _build_lp(I_samples_set, J_samples_set,
-                        nF, nP, M, psi_I_fn, psi_J_fn, coef_bound)
+                        nF, nP, M, psi_I_fn, psi_J_fn, coef_bound,
+                        F_ref=F_ref)
         if not res.success:
             if verbose:
                 print(f"      LP fail at exchange {it}: {res.message}")
-            return False, -np.inf, F, P
+            return -np.inf, F, P
 
         h = res.x[-1]
         F, P = _extract_poly(res.x, nF, nP)
 
-        # Dense verification (in Chebyshev basis on the scaled interval).
         new_pts_I = []
         new_pts_J = []
 
@@ -246,14 +247,12 @@ def _probe_feasibility(passbands, stopbands, sigma_I, sigma_J, nF, nP,
             psi_x = np.array([psi_I_fn(x) for x in xs])
             Fx = _cheb_eval(F, xs)
             Px = _cheb_eval(P, xs)
-            v_abs = np.abs(Fx) - psi_x * np.abs(Px)
-            v_sig = -sig * Px
-            worst_abs_idx = int(np.argmax(v_abs))
-            worst_sig_idx = int(np.argmax(v_sig))
-            if v_abs[worst_abs_idx] > tol:
-                new_pts_I.append((xs[worst_abs_idx], sig))
-            if v_sig[worst_sig_idx] > tol:
-                new_pts_I.append((xs[worst_sig_idx], sig))
+            v_ratio = np.abs(Fx) - psi_x * np.abs(Px)
+            v_sig   = -sig * Px
+            for v in (v_ratio, v_sig):
+                worst = int(np.argmax(v))
+                if v[worst] > tol:
+                    new_pts_I.append((xs[worst], sig))
 
         for k, (a, b) in enumerate(stopbands):
             ys = np.linspace(a, b, refine_samples)
@@ -262,25 +261,131 @@ def _probe_feasibility(passbands, stopbands, sigma_I, sigma_J, nF, nP,
             Meff = psi_y + M
             Fy = _cheb_eval(F, ys)
             Py = _cheb_eval(P, ys)
-            # Violation:  h - (sigma F - Meff |P|)  > 0
-            v = h - (sig * Fy - Meff * np.abs(Py))
-            worst_idx = int(np.argmax(v))
-            if v[worst_idx] > tol * max(1.0, abs(h)):
-                new_pts_J.append((ys[worst_idx], sig))
+            if F_ref is not None:
+                rhs = np.abs(_cheb_eval(F_ref, ys))
+            else:
+                rhs = np.ones_like(ys)
+            v = h * rhs - (sig * Fy - Meff * np.abs(Py))
+            worst = int(np.argmax(v))
+            if v[worst] > tol * max(1.0, abs(h)):
+                new_pts_J.append((ys[worst], sig))
 
         if not new_pts_I and not new_pts_J:
-            if verbose:
-                print(f"      exchange {it}: converged, h={h:.4e}")
             break
 
         if verbose:
-            print(f"      exchange {it}: added {len(new_pts_I)} I pts, "
-                  f"{len(new_pts_J)} J pts (h={h:.4e})")
+            print(f"      exchange {it}: added {len(new_pts_I)} I, "
+                  f"{len(new_pts_J)} J (h={h:.4e})")
 
         I_samples_set.extend(new_pts_I)
         J_samples_set.extend(new_pts_J)
 
+    return h, F, P
+
+
+def _min_signed_ratio_minus_psi(F, P, stopbands, sigma_J, psi_J_fn,
+                                n_samples=6000):
+    """min_{y in J}  (sigma(y) F(y) / |P(y)| - psi_J(y)).
+
+    When the candidate (F, P) has F with the expected sign on each J
+    interval, this equals  min_{y in J} (|F/P| - psi_J).  A wrong sign
+    configuration produces a large negative value, which prunes that
+    sign combination from the outer search."""
+    vals = []
+    for (a, b), sig in zip(stopbands, sigma_J):
+        ys = np.linspace(a, b, n_samples)
+        Fy = _cheb_eval(F, ys)
+        Py = _cheb_eval(P, ys)
+        good = np.abs(Py) > 1e-14
+        r = sig * Fy[good] / np.abs(Py[good])
+        psi = np.array([psi_J_fn(y) for y in ys[good]])
+        vals.append(r - psi)
+    return float(np.min(np.concatenate(vals))) if vals else np.inf
+
+
+def _probe_feasibility(passbands, stopbands, sigma_I, sigma_J, nF, nP,
+                       M, psi_I_fn, psi_J_fn,
+                       coef_bound=1e8, base_samples=25, refine_samples=2000,
+                       max_exchange=10, tol=1e-6, verbose=False):
+    """Kept for bisection compatibility: returns (feasible, h, F, P)
+    assuming F_ref = 1 (non-quadratic form)."""
+    h, F, P = _probe_lp(passbands, stopbands, sigma_I, sigma_J, nF, nP,
+                       M, psi_I_fn, psi_J_fn, F_ref=None,
+                       coef_bound=coef_bound, base_samples=base_samples,
+                       refine_samples=refine_samples,
+                       max_exchange=max_exchange, tol=tol, verbose=verbose)
     return (h > -tol), h, F, P
+
+
+# -----------------------------------------------------------------------------
+# Paper's iterative differential correction, eq (10)/(14) -- quadratic conv.
+# -----------------------------------------------------------------------------
+
+def _solve_signed_diffcorr(passbands, stopbands, sigma_I, sigma_J, nF, nP,
+                           psi_I_fn, psi_J_fn,
+                           coef_bound=1e8, base_samples=25,
+                           refine_samples=3000,
+                           max_iter=30, tol=1e-6, verbose=False):
+    """Paper's Section V.C algorithm with the eq. (14) quadratic correction.
+
+        Step 0:  solve LP at M_{-1}=1, F_{-1}=1 to get (F_0, P_0).
+                 Compute M_0 = min_J (sigma F_0 / |P_0| - psi_J).
+        Step k:  solve LP at M = M_{k-1} with F_ref = F_{k-1}.
+                 If the LP's h <= 0 return (F_{k-1}, P_{k-1}, M_{k-1}).
+                 Else  M_k = min_J (sigma F_k / |P_k| - psi_J).
+
+    The `min` is computed densely (verification of the continuum).
+    """
+    # Step 0: bootstrap (F_0, P_0).  We start at an M_{-1} that is
+    # guaranteed feasible, namely  -max(psi_J on J) - 1  (which makes
+    # Meff <= -1 and sigma F >= Meff|P| is trivially satisfied).  The
+    # paper's suggestion M_{-1}=1 fails when psi_J dominates.
+    psi_J_max = 0.0
+    for (a, b) in stopbands:
+        for w in np.linspace(a, b, 11):
+            psi_J_max = max(psi_J_max, psi_J_fn(w))
+    M_start = -psi_J_max - 1.0
+
+    h0, F_km1, P_km1 = _probe_lp(
+        passbands, stopbands, sigma_I, sigma_J, nF, nP,
+        M=M_start, psi_I_fn=psi_I_fn, psi_J_fn=psi_J_fn, F_ref=None,
+        coef_bound=coef_bound, base_samples=base_samples,
+        refine_samples=refine_samples, tol=tol, verbose=False,
+    )
+    if F_km1 is None:
+        return None, None, -np.inf
+    M_km1 = _min_signed_ratio_minus_psi(F_km1, P_km1, stopbands,
+                                        sigma_J, psi_J_fn,
+                                        n_samples=refine_samples)
+    if verbose:
+        print(f"    init:  h0={h0:.3e}  M_0={M_km1:.4f}")
+
+    best_F, best_P, best_M = F_km1, P_km1, M_km1
+
+    for k in range(1, max_iter + 1):
+        h, F_k, P_k = _probe_lp(
+            passbands, stopbands, sigma_I, sigma_J, nF, nP,
+            M=M_km1, psi_I_fn=psi_I_fn, psi_J_fn=psi_J_fn, F_ref=F_km1,
+            coef_bound=coef_bound, base_samples=base_samples,
+            refine_samples=refine_samples, tol=tol, verbose=False,
+        )
+        if F_k is None or h <= tol:
+            if verbose:
+                print(f"    iter {k}: stop (h={h:.3e})")
+            break
+        M_k = _min_signed_ratio_minus_psi(F_k, P_k, stopbands,
+                                          sigma_J, psi_J_fn,
+                                          n_samples=refine_samples)
+        if verbose:
+            print(f"    iter {k}: h={h:.3e}  M={M_k:.5f}  dM={M_k-M_km1:.2e}")
+        if M_k > best_M:
+            best_M = M_k
+            best_F, best_P = F_k, P_k
+        if M_k - M_km1 < tol * max(1.0, abs(M_k)):
+            break
+        F_km1, P_km1, M_km1 = F_k, P_k, M_k
+
+    return best_F, best_P, best_M
 
 
 # -----------------------------------------------------------------------------
@@ -289,15 +394,52 @@ def _probe_feasibility(passbands, stopbands, sigma_I, sigma_J, nF, nP,
 
 def _solve_signed_bisection(passbands, stopbands, sigma_I, sigma_J, nF, nP,
                             psi_I_fn, psi_J_fn,
-                            M_lo=0.0, M_hi=None,
+                            M_lo=None, M_hi=None,
                             bisection_tol=1e-5,
                             coef_bound=1e8, base_samples=25,
                             refine_samples=2000, verbose=False):
     """Bisect on M to find the largest level at which the LP is feasible
-    (h > 0), for the given sign combination."""
+    (h > 0), for the given sign combination.  If M_lo is not given we
+    search downward until the LP becomes feasible (allowing M < 0,
+    meaning the optimal filter undershoots the psi specification)."""
+    # Find a feasible lower bracket.  Try M=0 first; if that is infeasible
+    # descend geometrically in |M|.
+    if M_lo is None:
+        M_lo = 0.0
+        feas_lo, _, F_best, P_best = _probe_feasibility(
+            passbands, stopbands, sigma_I, sigma_J, nF, nP,
+            M_lo, psi_I_fn, psi_J_fn,
+            coef_bound=coef_bound, base_samples=base_samples,
+            refine_samples=refine_samples, verbose=False)
+        step = -1.0
+        while not feas_lo:
+            M_lo += step
+            step *= 2.0
+            feas_lo, _, F_best, P_best = _probe_feasibility(
+                passbands, stopbands, sigma_I, sigma_J, nF, nP,
+                M_lo, psi_I_fn, psi_J_fn,
+                coef_bound=coef_bound, base_samples=base_samples,
+                refine_samples=refine_samples, verbose=False)
+            if M_lo < -1e4:
+                if verbose:
+                    print(f"    giving up lo-bracket at M_lo={M_lo}")
+                return None, None, -np.inf
+            if verbose:
+                print(f"    probing M_lo={M_lo:.2f} feas={feas_lo}")
+    else:
+        feas_lo, _, F_best, P_best = _probe_feasibility(
+            passbands, stopbands, sigma_I, sigma_J, nF, nP,
+            M_lo, psi_I_fn, psi_J_fn,
+            coef_bound=coef_bound, base_samples=base_samples,
+            refine_samples=refine_samples, verbose=False)
+        if not feas_lo:
+            if verbose:
+                print(f"    low bound M={M_lo} already infeasible.")
+            return None, None, -np.inf
+
     # Grow M_hi until infeasible.
     if M_hi is None:
-        M_hi = max(1.0, 2.0 * M_lo + 1.0)
+        M_hi = max(M_lo + 1.0, 1.0)
         for _ in range(40):
             feas, h, F, P = _probe_feasibility(
                 passbands, stopbands, sigma_I, sigma_J, nF, nP,
@@ -308,22 +450,14 @@ def _solve_signed_bisection(passbands, stopbands, sigma_I, sigma_J, nF, nP,
                 print(f"    hi probe M={M_hi:.4g}: feas={feas} h={h:.3e}")
             if not feas:
                 break
-            M_hi *= 2.0
+            if M_hi > 0:
+                M_hi *= 2.0
+            else:
+                M_hi = M_hi / 2.0 + 1.0   # push through 0 quickly
         else:
             raise RuntimeError("Could not bracket M: feasible up to a huge "
                                "value - probably an unbounded/degenerate "
                                "formulation.")
-
-    # Ensure M_lo is feasible (optional).
-    feas_lo, _, F_best, P_best = _probe_feasibility(
-        passbands, stopbands, sigma_I, sigma_J, nF, nP,
-        M_lo, psi_I_fn, psi_J_fn,
-        coef_bound=coef_bound, base_samples=base_samples,
-        refine_samples=refine_samples, verbose=False)
-    if not feas_lo:
-        if verbose:
-            print(f"    low bound M={M_lo} already infeasible.")
-        return None, None, -np.inf
 
     best_M = M_lo
     # Standard bisection.
@@ -356,7 +490,7 @@ def solve_zolotarev(passbands, stopbands, nF, nP,
                     psi_I=1.0, psi_J=0.0,
                     coef_bound=1e8, base_samples=30,
                     refine_samples=4000, bisection_tol=1e-5,
-                    rescale=True, verbose=False):
+                    rescale=True, method="diffcorr", verbose=False):
     """
     Compute the certified optimal real filtering function (F, P) for the
     multiband specification.  Returns a dict with keys
@@ -396,13 +530,21 @@ def solve_zolotarev(passbands, stopbands, nF, nP,
         for bits_J in product([1, -1], repeat=p):
             if verbose:
                 print(f"sigma_I={bits_I}  sigma_J={bits_J}")
-            F_s, P_s, M_val = _solve_signed_bisection(
-                pb_s, sb_s, list(bits_I), list(bits_J),
-                nF, nP, psi_I_fn, psi_J_fn,
-                M_lo=0.0, M_hi=None,
-                coef_bound=coef_bound, base_samples=base_samples,
-                refine_samples=refine_samples,
-                bisection_tol=bisection_tol, verbose=verbose)
+            if method == "diffcorr":
+                F_s, P_s, M_val = _solve_signed_diffcorr(
+                    pb_s, sb_s, list(bits_I), list(bits_J),
+                    nF, nP, psi_I_fn, psi_J_fn,
+                    coef_bound=coef_bound, base_samples=base_samples,
+                    refine_samples=refine_samples,
+                    max_iter=30, tol=bisection_tol, verbose=verbose)
+            else:
+                F_s, P_s, M_val = _solve_signed_bisection(
+                    pb_s, sb_s, list(bits_I), list(bits_J),
+                    nF, nP, psi_I_fn, psi_J_fn,
+                    M_lo=None, M_hi=None,
+                    coef_bound=coef_bound, base_samples=base_samples,
+                    refine_samples=refine_samples,
+                    bisection_tol=bisection_tol, verbose=verbose)
             if F_s is None:
                 continue
             if verbose:
