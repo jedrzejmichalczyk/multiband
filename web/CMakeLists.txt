@@ -62,9 +62,23 @@ endif()
 
 # ----- Emscripten build ----------------------------------------------------
 if (EMSCRIPTEN)
-  add_executable(solver src/solver_wasm_main.cpp)
-  target_link_libraries(solver PRIVATE zolo)
+  # Compile solver sources DIRECTLY into the executable rather than going
+  # through the static library `zolo`.  The EMSCRIPTEN_BINDINGS macro in
+  # solver_json.cpp registers the JS-visible `solve_json` via a C++ static
+  # constructor; if that object file lives inside a static archive, LTO
+  # drops the registration because nothing references it.  Putting the
+  # sources on the executable keeps the constructor in the final link.
+  add_executable(solver
+    src/solver_wasm_main.cpp
+    src/solver.cpp
+    src/solver_json.cpp
+  )
+  target_include_directories(solver PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(solver PRIVATE highs)
   set_target_properties(solver PROPERTIES OUTPUT_NAME "solver")
+  target_compile_options(solver PRIVATE --bind)
   target_link_options(solver PRIVATE
     "-sMODULARIZE=1"
     "-sEXPORT_NAME=createSolverModule"
@@ -72,6 +86,7 @@ if (EMSCRIPTEN)
     "-sALLOW_MEMORY_GROWTH=1"
     "-sINITIAL_MEMORY=67108864"   # 64 MB initial heap
     "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
+    "-sDISABLE_EXCEPTION_CATCHING=0"  # embind throws on JSON errors
     "--bind"
     "-O3"
   )
