@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multiband Zolotarev Filter Synthesis</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+</head>
+<body>
+<header>
+  <h1>Multiband Zolotarev filter synthesis</h1>
+  <p>
+    Browser-side implementation of
+    <a href="https://ieeexplore.ieee.org/document/4395021">Lunot, Seyfert, Bila &amp; Nasser (2008)</a>
+    &ldquo;Certified Computation of Optimal Multiband Filtering Functions.&rdquo;
+    The solver is ~800 lines of C++ compiled to WebAssembly; the LP back-end is
+    <a href="https://highs.dev">HiGHS</a>.
+  </p>
+</header>
+
+<main>
+  <section class="gallery">
+    <h2>Gallery</h2>
+    <p>
+      Pre-computed results from the Python reference implementation — these are
+      the paper's two design examples, reproduced with the asymmetric
+      return-loss / rejection specifications.  Use these as a starting point,
+      or load them directly into the editor below.
+    </p>
+    <div class="gallery-grid">
+      <article>
+        <h3>Example 1 &mdash; 9-3 dual-band</h3>
+        <a href="example1.png"><img src="example1.png" alt="Example 1 response"></a>
+        <dl>
+          <dt>Passbands</dt><dd>[−1, −0.625], [0.25, 1]</dd>
+          <dt>Stopbands</dt><dd>[−10, −1.188], [−0.5, 0.125], [1.212, 10]</dd>
+          <dt>Specs</dt><dd>RL 20 dB; reject 15 dB outer, 30 dB middle</dd>
+          <dt>Result</dt>
+          <dd>17 alternation points (&ge; 14 needed) &rArr; certified optimal.</dd>
+        </dl>
+        <button class="load-preset" data-preset="example1">Load preset</button>
+      </article>
+      <article>
+        <h3>Example 2 &mdash; 7-3 dual-band</h3>
+        <a href="example2.png"><img src="example2.png" alt="Example 2 response"></a>
+        <dl>
+          <dt>Passbands</dt><dd>[−1, −0.383], [0.383, 1]</dd>
+          <dt>Stopbands</dt><dd>piecewise 10 / 15 / 20 / 40 dB targets</dd>
+          <dt>Specs</dt><dd>RL 23 dB</dd>
+          <dt>Result</dt>
+          <dd>12 alternation points (= 12 target) &rArr; certified optimal.</dd>
+        </dl>
+        <button class="load-preset" data-preset="example2">Load preset</button>
+      </article>
+    </div>
+  </section>
+
+  <section class="solver">
+    <h2>Try your own specification</h2>
+    <p>
+      All inputs are on a normalised <code>ω</code> axis.  Use finite
+      truncations of any stopband extending to infinity (e.g. <code>[−10, −1.2]</code>).
+    </p>
+    <form id="spec-form">
+      <fieldset>
+        <legend>Filter order</legend>
+        <label>n<sub>F</sub> (reflection zeros)
+          <input type="number" id="nF" value="9" min="1" max="20">
+        </label>
+        <label>n<sub>P</sub> (transmission zeros)
+          <input type="number" id="nP" value="3" min="0" max="15">
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Passbands (one <code>[a, b]</code> pair per line)</legend>
+        <textarea id="passbands" rows="2">-1, -0.625
+0.25, 1.0</textarea>
+        <label>Return loss (dB)
+          <input type="number" id="psi_I_db" value="20" min="0" step="0.5">
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Stopbands (one <code>[a, b]</code> pair per line)</legend>
+        <textarea id="stopbands" rows="3">-10, -1.188
+-0.5, 0.125
+1.212, 10</textarea>
+        <label>Default rejection (dB)
+          <input type="number" id="psi_J_default_db" value="15" min="0" step="0.5">
+        </label>
+        <label>Piecewise overrides (one <code>[a, b], dB</code> per line, optional)
+          <textarea id="psi_J_pieces" rows="2">-0.5, 0.125, 30</textarea>
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Solver options</legend>
+        <label>Base samples per interval
+          <input type="number" id="base_samples" value="40" min="10" max="200">
+        </label>
+        <label>Rescale ω into [−1, 1]
+          <input type="checkbox" id="rescale" checked>
+        </label>
+      </fieldset>
+
+      <div class="actions">
+        <button type="submit" id="run-btn">Synthesise filter</button>
+        <span id="status"></span>
+      </div>
+    </form>
+
+    <div id="result">
+      <div id="plot" style="width:100%;height:440px;"></div>
+      <details>
+        <summary>Filter data (F, P polynomials, σ, M slack)</summary>
+        <pre id="filter-data"></pre>
+      </details>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <p>
+    Paper:
+    <cite>V. Lunot, F. Seyfert, S. Bila, A. Nasser — IEEE T-MTT vol. 56 no. 1, pp. 105–112 (2008)</cite>.
+    Solver source on
+    <a href="https://github.com/">GitHub</a>.
+  </p>
+</footer>
+
+<script src="presets.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

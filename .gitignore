@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.claude/
+
+# C++/CMake build outputs
+web/build-*/
+web/ui/solver.js
+web/ui/solver.wasm
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
