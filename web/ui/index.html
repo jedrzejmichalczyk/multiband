@@ -5,133 +5,145 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Multiband Zolotarev Filter Synthesis</title>
 <link rel="stylesheet" href="style.css">
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<script defer src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
 </head>
 <body>
+
 <header>
   <h1>Multiband Zolotarev filter synthesis</h1>
-  <p>
-    Browser-side implementation of
-    <a href="https://ieeexplore.ieee.org/document/4395021">Lunot, Seyfert, Bila &amp; Nasser (2008)</a>
-    &ldquo;Certified Computation of Optimal Multiband Filtering Functions.&rdquo;
-    The solver is ~800 lines of C++ compiled to WebAssembly; the LP back-end is
-    <a href="https://highs.dev">HiGHS</a>.
+  <p class="lede">
+    Browser-side solver for the certified-optimal multiband filtering
+    problem of
+    <a href="https://ieeexplore.ieee.org/document/4395021">Lunot, Seyfert, Bila &amp; Nasser (IEEE T-MTT, 2008)</a>.
+    Specify passbands with a return-loss target and stopbands with
+    per-interval rejection targets; the solver returns the
+    characteristic function &nbsp;<code>D(ω) = F(ω) / P(ω)</code>&nbsp;
+    that maximises the worst-case slack above the stopband targets
+    while meeting the passband constraint.
+    |S<sub>21</sub>|² = 1 / (1 + D²).
   </p>
 </header>
 
 <main>
-  <section class="gallery">
-    <h2>Gallery</h2>
-    <p>
-      Pre-computed results from the Python reference implementation — these are
-      the paper's two design examples, reproduced with the asymmetric
-      return-loss / rejection specifications.  Use these as a starting point,
-      or load them directly into the editor below.
-    </p>
-    <div class="gallery-grid">
-      <article>
-        <h3>Example 1 &mdash; 9-3 dual-band</h3>
-        <a href="example1.png"><img src="example1.png" alt="Example 1 response"></a>
-        <dl>
-          <dt>Passbands</dt><dd>[−1, −0.625], [0.25, 1]</dd>
-          <dt>Stopbands</dt><dd>[−10, −1.188], [−0.5, 0.125], [1.212, 10]</dd>
-          <dt>Specs</dt><dd>RL 20 dB; reject 15 dB outer, 30 dB middle</dd>
-          <dt>Result</dt>
-          <dd>17 alternation points (&ge; 14 needed) &rArr; certified optimal.</dd>
-        </dl>
-        <button class="load-preset" data-preset="example1">Load preset</button>
-      </article>
-      <article>
-        <h3>Example 2 &mdash; 7-3 dual-band</h3>
-        <a href="example2.png"><img src="example2.png" alt="Example 2 response"></a>
-        <dl>
-          <dt>Passbands</dt><dd>[−1, −0.383], [0.383, 1]</dd>
-          <dt>Stopbands</dt><dd>piecewise 10 / 15 / 20 / 40 dB targets</dd>
-          <dt>Specs</dt><dd>RL 23 dB</dd>
-          <dt>Result</dt>
-          <dd>12 alternation points (= 12 target) &rArr; certified optimal.</dd>
-        </dl>
-        <button class="load-preset" data-preset="example2">Load preset</button>
-      </article>
+
+<!-- ======================== Presets ========================= -->
+<section id="presets">
+  <h2>Start from a preset</h2>
+  <div class="preset-grid">
+    <button class="preset" data-preset="ex1_uniform">
+      <strong>Example 1 &mdash; uniform 9-3</strong>
+      <small>Paper band geometry, 20 dB RL, uniform rejection target.
+        Clean ~8 dB uniform rejection.</small>
+    </button>
+    <button class="preset" data-preset="ex1_paper">
+      <strong>Example 1 &mdash; asymmetric 15/30 dB</strong>
+      <small>Paper's aggressive dual-band spec — 9-3 can't meet
+        the 30 dB middle target.  M slack reports as negative.</small>
+    </button>
+    <button class="preset" data-preset="ex2_paper">
+      <strong>Example 2 &mdash; asymmetric 7-3</strong>
+      <small>Paper's 10/15/20/40 dB spec with 23 dB return loss.</small>
+    </button>
+    <button class="preset" data-preset="symmetric_dual">
+      <strong>Symmetric dual-band 8-4</strong>
+      <small>Narrow symmetric problem — fast and the response is
+        easy to read on the plot.</small>
+    </button>
+  </div>
+</section>
+
+<!-- ======================== Spec editor ========================= -->
+<section id="editor">
+  <div class="spec-header">
+    <h2>Filter specification</h2>
+    <div class="order-block">
+      <label>n<sub>F</sub>
+        <input type="number" id="nF" value="9" min="1" max="20">
+        <span class="hint">reflection zeros</span>
+      </label>
+      <label>n<sub>P</sub>
+        <input type="number" id="nP" value="3" min="0" max="15">
+        <span class="hint">transmission zeros</span>
+      </label>
     </div>
-  </section>
+  </div>
 
-  <section class="solver">
-    <h2>Try your own specification</h2>
-    <p>
-      All inputs are on a normalised <code>ω</code> axis.  Use finite
-      truncations of any stopband extending to infinity (e.g. <code>[−10, −1.2]</code>).
-      The default below solves the pure Zolotarev problem on Example 1's
-      band structure (uniform rejection target 0 dB, maximised by the
-      algorithm).  Load one of the gallery presets to replay the paper's
-      aggressive asymmetric specifications — those are intentionally hard
-      so the solver reports a large negative <code>M</code> slack.
-    </p>
-    <form id="spec-form">
-      <fieldset>
-        <legend>Filter order</legend>
-        <label>n<sub>F</sub> (reflection zeros)
-          <input type="number" id="nF" value="9" min="1" max="20">
-        </label>
-        <label>n<sub>P</sub> (transmission zeros)
-          <input type="number" id="nP" value="3" min="0" max="15">
-        </label>
-      </fieldset>
+  <div class="bands">
+    <div class="band-col">
+      <header>
+        <h3>Passbands <span class="badge pass">I</span></h3>
+        <button type="button" class="row-add" data-kind="pass">+ add band</button>
+      </header>
+      <table class="band-tbl pass">
+        <thead><tr><th>ω<sub>lo</sub></th><th>ω<sub>hi</sub></th><th>RL (dB)</th><th></th></tr></thead>
+        <tbody id="pass-rows"></tbody>
+      </table>
+    </div>
 
-      <fieldset>
-        <legend>Passbands (one <code>[a, b]</code> pair per line)</legend>
-        <textarea id="passbands" rows="2">-1, -0.625
-0.25, 1.0</textarea>
-        <label>Return loss (dB)
-          <input type="number" id="psi_I_db" value="20" min="0" step="0.5">
-        </label>
-      </fieldset>
+    <div class="band-col">
+      <header>
+        <h3>Stopbands <span class="badge stop">J</span></h3>
+        <button type="button" class="row-add" data-kind="stop">+ add band</button>
+      </header>
+      <table class="band-tbl stop">
+        <thead><tr><th>ω<sub>lo</sub></th><th>ω<sub>hi</sub></th><th>rej (dB)</th><th></th></tr></thead>
+        <tbody id="stop-rows"></tbody>
+      </table>
+    </div>
+  </div>
 
-      <fieldset>
-        <legend>Stopbands (one <code>[a, b]</code> pair per line)</legend>
-        <textarea id="stopbands" rows="3">-10, -1.188
--0.5, 0.125
-1.212, 10</textarea>
-        <label>Default rejection target (dB)
-          <input type="number" id="psi_J_default_db" value="0" min="0" step="0.5">
-        </label>
-        <label>Piecewise overrides (one <code>[a, b], dB</code> per line, optional)
-          <textarea id="psi_J_pieces" rows="2"></textarea>
-        </label>
-      </fieldset>
+  <div class="run-block">
+    <button id="run-btn" type="button">Synthesise filter</button>
+    <span id="status"></span>
+  </div>
+</section>
 
-      <fieldset>
-        <legend>Solver options</legend>
-        <label>Base samples per interval
-          <input type="number" id="base_samples" value="40" min="10" max="200">
-        </label>
-        <label>Rescale ω into [−1, 1]
-          <input type="checkbox" id="rescale" checked>
-        </label>
-      </fieldset>
+<!-- ======================== Results ========================= -->
+<section id="results" class="hidden">
+  <div class="result-head">
+    <h2>Result</h2>
+    <div id="m-badge" class="m-badge"></div>
+  </div>
 
-      <div class="actions">
-        <button type="submit" id="run-btn">Synthesise filter</button>
-        <span id="status"></span>
+  <div id="plot" class="plot"></div>
+
+  <div class="summary">
+    <div class="summary-col">
+      <h3>Passbands</h3>
+      <table id="tbl-pass" class="result-tbl"></table>
+    </div>
+    <div class="summary-col">
+      <h3>Stopbands</h3>
+      <table id="tbl-stop" class="result-tbl"></table>
+    </div>
+  </div>
+
+  <details class="zeros">
+    <summary>Zero locations and polynomial coefficients</summary>
+    <div class="zeros-grid">
+      <div>
+        <h4>Reflection zeros (roots of F)</h4>
+        <ul id="zeros-F"></ul>
       </div>
-    </form>
-
-    <div id="result">
-      <div id="plot" style="width:100%;height:440px;"></div>
-      <details>
-        <summary>Filter data (F, P polynomials, σ, M slack)</summary>
-        <pre id="filter-data"></pre>
-      </details>
+      <div>
+        <h4>Transmission zeros (roots of P)</h4>
+        <ul id="zeros-P"></ul>
+      </div>
     </div>
-  </section>
+    <h4>Polynomial coefficients (ascending)</h4>
+    <pre id="coeffs"></pre>
+  </details>
+</section>
+
 </main>
 
 <footer>
   <p>
-    Paper:
-    <cite>V. Lunot, F. Seyfert, S. Bila, A. Nasser — IEEE T-MTT vol. 56 no. 1, pp. 105–112 (2008)</cite>.
-    Solver source on
-    <a href="https://github.com/">GitHub</a>.
+    Solver: ~800 lines of C++17 compiled to WebAssembly via Emscripten; LP back-end is
+    <a href="https://highs.dev">HiGHS v1.7.2</a>.
+    Reference:
+    <cite>V. Lunot, F. Seyfert, S. Bila, A. Nasser &mdash; IEEE T-MTT vol. 56 no. 1, pp. 105&ndash;112 (2008)</cite>.
+    Source: <a href="https://github.com/jedrzejmichalczyk/multiband">github.com/jedrzejmichalczyk/multiband</a>.
   </p>
 </footer>
 

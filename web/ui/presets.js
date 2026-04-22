@@ -1,20 +1,56 @@
-// Paper examples that match what the Python reference produces.
+// Presets match the in-page form structure: each entry is a filter order
+// plus per-band targets in dB.
 window.ZOLO_PRESETS = {
-  example1: {
+  ex1_uniform: {
     nF: 9, nP: 3,
-    passbands: "-1, -0.625\n0.25, 1.0",
-    stopbands: "-10, -1.188\n-0.5, 0.125\n1.212, 10",
-    psi_I_db: 20,
-    psi_J_default_db: 15,
-    psi_J_pieces: "-0.5, 0.125, 30",
+    passbands: [
+      { a: -1.0, b: -0.625, rl_db: 20 },
+      { a:  0.25, b: 1.0,   rl_db: 20 },
+    ],
+    stopbands: [
+      { a: -10.0, b: -1.188, rej_db: 0 },
+      { a:  -0.5, b:  0.125, rej_db: 0 },
+      { a:  1.212, b: 10.0,  rej_db: 0 },
+    ],
   },
-  example2: {
+
+  ex1_paper: {
+    nF: 9, nP: 3,
+    passbands: [
+      { a: -1.0, b: -0.625, rl_db: 20 },
+      { a:  0.25, b: 1.0,   rl_db: 20 },
+    ],
+    stopbands: [
+      { a: -10.0, b: -1.188, rej_db: 15 },
+      { a:  -0.5, b:  0.125, rej_db: 30 },
+      { a:  1.212, b: 10.0,  rej_db: 15 },
+    ],
+  },
+
+  ex2_paper: {
     nF: 7, nP: 3,
-    passbands: "-1, -0.383\n0.383, 1",
-    stopbands: "-10, -1.987\n-1.987, -1.864\n-0.037, -0.012\n1.185, 10",
-    psi_I_db: 23,
-    psi_J_default_db: 40,
-    psi_J_pieces:
-      "-10, -1.987, 10\n-1.987, -1.864, 15\n-0.037, -0.012, 20",
+    passbands: [
+      { a: -1.0,   b: -0.383, rl_db: 23 },
+      { a:  0.383, b:  1.0,   rl_db: 23 },
+    ],
+    stopbands: [
+      { a: -10.0,   b: -1.987, rej_db: 10 },
+      { a:  -1.987, b: -1.864, rej_db: 15 },
+      { a:  -0.037, b: -0.012, rej_db: 20 },
+      { a:   1.185, b: 10.0,   rej_db: 40 },
+    ],
+  },
+
+  symmetric_dual: {
+    nF: 8, nP: 4,
+    passbands: [
+      { a: -1.0, b: -0.5, rl_db: 20 },
+      { a:  0.5, b:  1.0, rl_db: 20 },
+    ],
+    stopbands: [
+      { a: -3.0, b: -1.2, rej_db: 0 },
+      { a: -0.3, b:  0.3, rej_db: 0 },
+      { a:  1.2, b:  3.0, rej_db: 0 },
+    ],
   },
 };
