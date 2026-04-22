@@ -61,6 +61,11 @@
     <p>
       All inputs are on a normalised <code>ω</code> axis.  Use finite
       truncations of any stopband extending to infinity (e.g. <code>[−10, −1.2]</code>).
+      The default below solves the pure Zolotarev problem on Example 1's
+      band structure (uniform rejection target 0 dB, maximised by the
+      algorithm).  Load one of the gallery presets to replay the paper's
+      aggressive asymmetric specifications — those are intentionally hard
+      so the solver reports a large negative <code>M</code> slack.
     </p>
     <form id="spec-form">
       <fieldset>
@@ -87,11 +92,11 @@
         <textarea id="stopbands" rows="3">-10, -1.188
 -0.5, 0.125
 1.212, 10</textarea>
-        <label>Default rejection (dB)
-          <input type="number" id="psi_J_default_db" value="15" min="0" step="0.5">
+        <label>Default rejection target (dB)
+          <input type="number" id="psi_J_default_db" value="0" min="0" step="0.5">
         </label>
         <label>Piecewise overrides (one <code>[a, b], dB</code> per line, optional)
-          <textarea id="psi_J_pieces" rows="2">-0.5, 0.125, 30</textarea>
+          <textarea id="psi_J_pieces" rows="2"></textarea>
         </label>
       </fieldset>
 
