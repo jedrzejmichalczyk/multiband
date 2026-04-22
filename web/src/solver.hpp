@@ -79,6 +79,9 @@ Response scattering_response(const std::vector<double>& F_mono,
 double rl_db_to_psi(double rl_db);
 double rej_db_to_psi(double rej_db);
 
+// Toggle verbose iteration tracing on stderr (off by default).
+void set_trace(bool v);
+
 // JSON entry point for the WebAssembly build.
 // Input (example):
 //   {"passbands": [[-1,-0.625],[0.25,1]],

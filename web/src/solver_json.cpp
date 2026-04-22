@@ -72,7 +72,15 @@ std::string solve_json(const std::string& spec_json) {
     spec.nF = in.at("nF").as_int();
     spec.nP = in.at("nP").as_int();
 
-    double psi_I_const   = rl_db_to_psi(in.value_num("psi_I_db", 20.0));
+    // psi_I_linear takes precedence over psi_I_db; rl_db_to_psi(0) is
+    // infinite (no return-loss constraint) which isn't a useful default,
+    // so we allow callers to specify the linear value directly.
+    double psi_I_const;
+    if (in.contains("psi_I_linear")) {
+      psi_I_const = in.at("psi_I_linear").as_num();
+    } else {
+      psi_I_const = rl_db_to_psi(in.value_num("psi_I_db", 20.0));
+    }
     double psi_J_default = rej_db_to_psi(in.value_num("psi_J_default_db", 0.0));
 
     struct Piece { double a; double b; double psi; };
@@ -93,6 +101,8 @@ std::string solve_json(const std::string& spec_json) {
       return psi_J_default;
     };
 
+    if (in.contains("trace")) set_trace(in.at("trace").as_bool());
+    else set_trace(false);
     spec.base_samples   = in.value_int("base_samples",   spec.base_samples);
     spec.refine_samples = in.value_int("refine_samples", spec.refine_samples);
     spec.max_iter       = in.value_int("max_iter",       spec.max_iter);

@@ -12,6 +12,17 @@
 
 #include "Highs.h"
 
+// Verbose iteration tracing switch (set via `zolo::set_trace(true)` from
+// the JSON layer).  Used to compare against the Python reference.
+#include <cstdlib>
+#include <cstdio>
+namespace {
+  bool g_trace = false;
+}
+int zolo_trace() { return g_trace ? 1 : 0; }
+namespace zolo { void set_trace(bool v); }
+void zolo::set_trace(bool v) { g_trace = v; }
+
 namespace zolo {
 
 // ---------------------------------------------------------------------------
@@ -238,40 +249,44 @@ static LPResult build_and_solve_lp(const std::vector<SamplePt>& I_pts,
     }
   }
 
-  // Pack into HiGHS row-wise format.
-  HighsLp lp;
-  lp.num_col_ = nvar;
-  lp.num_row_ = static_cast<HighsInt>(rows.size());
-  lp.col_cost_ = col_cost;
-  lp.col_lower_ = col_lower;
-  lp.col_upper_ = col_upper;
-  lp.row_lower_.assign(rows.size(), -kHighsInf);
-  lp.row_upper_.resize(rows.size());
-  for (size_t i = 0; i < rows.size(); ++i) lp.row_upper_[i] = rows[i].ub;
-
-  lp.a_matrix_.format_ = MatrixFormat::kRowwise;
-  lp.a_matrix_.num_row_ = lp.num_row_;
-  lp.a_matrix_.num_col_ = lp.num_col_;
-  lp.a_matrix_.start_.push_back(0);
-  for (const auto& r : rows) {
-    for (std::size_t k = 0; k < r.idx.size(); ++k) {
-      lp.a_matrix_.index_.push_back(r.idx[k]);
-      lp.a_matrix_.value_.push_back(r.val[k]);
-    }
-    lp.a_matrix_.start_.push_back(
-        static_cast<HighsInt>(lp.a_matrix_.index_.size()));
-  }
-
-  lp.sense_ = ObjSense::kMinimize;
-
+  // Use HiGHS's incremental addCol/addRow API.  When building the matrix
+  // by hand and submitting via passModel(), HiGHS was reading the sparse
+  // matrix in a way that misinterpreted either the format or start-array
+  // layout and returned spurious infeasible statuses.  The incremental
+  // API is both safer and closer to how scipy.optimize.linprog does it.
   Highs highs;
   highs.setOptionValue("output_flag", false);
-  HighsStatus st = highs.passModel(lp);
-  if (st != HighsStatus::kOk) return {false, 0, {}, {}};
+
+  for (int j = 0; j < nvar; ++j) {
+    HighsStatus rc = highs.addCol(col_cost[j], col_lower[j], col_upper[j],
+                                  0, nullptr, nullptr);
+    if (rc != HighsStatus::kOk) return {false, 0, {}, {}};
+  }
+  highs.changeObjectiveSense(ObjSense::kMinimize);
+
+  for (const auto& r : rows) {
+    std::vector<HighsInt> idx(r.idx.size());
+    for (size_t k = 0; k < r.idx.size(); ++k) idx[k] = r.idx[k];
+    HighsStatus rc = highs.addRow(-kHighsInf, r.ub,
+                                  static_cast<HighsInt>(idx.size()),
+                                  idx.data(), r.val.data());
+    if (rc != HighsStatus::kOk) return {false, 0, {}, {}};
+  }
+
+  HighsStatus st = HighsStatus::kOk;
   st = highs.run();
-  if (st != HighsStatus::kOk) return {false, 0, {}, {}};
+  if (st != HighsStatus::kOk) {
+    if (zolo_trace()) std::fprintf(stderr, "  LP run failed (status=%d)\n",
+                                   static_cast<int>(st));
+    return {false, 0, {}, {}};
+  }
   HighsModelStatus ms = highs.getModelStatus();
-  if (ms != HighsModelStatus::kOptimal) return {false, 0, {}, {}};
+  if (ms != HighsModelStatus::kOptimal) {
+    if (zolo_trace())
+      std::fprintf(stderr, "  LP model status = %d\n",
+                   static_cast<int>(ms));
+    return {false, 0, {}, {}};
+  }
 
   const auto& sol = highs.getSolution();
   LPResult out;
@@ -426,9 +441,15 @@ static SignedResult solve_signed(const Spec& spec,
 
   auto [h0, F_km1, P_km1] = probe_lp(spec, pb, sb, sI, sJ, M_start, nullptr,
                                      psi_I, psi_J);
-  if (F_km1.empty()) return {};
+  if (F_km1.empty()) {
+    if (zolo_trace()) std::fprintf(stderr, "    init probe failed\n");
+    return {};
+  }
   double M_km1 = min_signed_ratio_minus_psi(F_km1, P_km1, sb, sJ, psi_J,
                                             spec.refine_samples);
+  if (zolo_trace())
+    std::fprintf(stderr, "    init M_start=%.3f h0=%.3e M_0=%.5f\n",
+                 M_start, h0, M_km1);
 
   SignedResult best;
   best.success = true;
@@ -439,9 +460,14 @@ static SignedResult solve_signed(const Spec& spec,
   for (int k = 1; k <= spec.max_iter; ++k) {
     auto [h, F_k, P_k] = probe_lp(spec, pb, sb, sI, sJ, M_km1, &F_km1,
                                   psi_I, psi_J);
+    if (zolo_trace())
+      std::fprintf(stderr, "    iter %d: h=%.3e\n", k, h);
     if (F_k.empty() || h <= spec.tol) break;
     double M_k = min_signed_ratio_minus_psi(F_k, P_k, sb, sJ, psi_J,
                                             spec.refine_samples);
+    if (zolo_trace())
+      std::fprintf(stderr, "            M=%.5f  dM=%.2e\n",
+                   M_k, M_k - M_km1);
     if (M_k > best.M) {
       best.M = M_k; best.F = F_k; best.P = P_k;
     }
@@ -494,7 +520,17 @@ Result solve_zolotarev(const Spec& spec) {
       std::vector<int> sJ(p);
       for (int k = 0; k < p; ++k) sJ[k] = (biJ & (1 << k)) ? -1 : 1;
 
+      if (zolo_trace()) {
+        std::fprintf(stderr, "sigma_I=[");
+        for (int x : sI) std::fprintf(stderr, "%d ", x);
+        std::fprintf(stderr, "]  sigma_J=[");
+        for (int x : sJ) std::fprintf(stderr, "%d ", x);
+        std::fprintf(stderr, "]\n");
+      }
       auto r1 = solve_signed(spec, pb_s, sb_s, sI, sJ, psi_I, psi_J);
+      if (zolo_trace())
+        std::fprintf(stderr, "  -> success=%d M=%.5f\n",
+                     r1.success ? 1 : 0, r1.M);
       if (!r1.success) continue;
       if (r1.M > best_signed.M) {
         best_signed = std::move(r1);
