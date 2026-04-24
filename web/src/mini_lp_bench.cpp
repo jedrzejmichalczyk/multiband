@@ -1,9 +1,17 @@
-// Bench the dense two-phase simplex on an LP the size of Example 1.
+// Bench: time a single production-sized LP solve (280 rows x 11 cols)
+// in NATIVE mini_lp.  Used to triage the WASM slowdown.
+//
+// Compile:
+//   g++ -std=c++17 -O2 -D_USE_MATH_DEFINES mini_lp_bench.cpp -o mini_lp_bench
 #include "mini_lp.hpp"
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <limits>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 int main() {
   using clock = std::chrono::steady_clock;
@@ -12,11 +20,10 @@ int main() {
   const int n = nF + 1 + 1;  // f_0..f_9 + h
   const double INF = std::numeric_limits<double>::infinity();
   std::vector<double> c(n, 0.0);
-  c[n - 1] = -1.0;  // maximise h
+  c[n - 1] = -1.0;
   std::vector<double> lo(n, -1e6), hi(n, 1e6);
   lo[n - 1] = -INF; hi[n - 1] = +INF;
 
-  // Build ~240-row passband + 240-row stopband LP like Example 1.
   std::vector<std::vector<double>> A;
   std::vector<double> b;
   auto add = [&](std::vector<double> r, double ub){ A.push_back(r); b.push_back(ub); };
@@ -27,8 +34,6 @@ int main() {
     if (N>=2) out[1]=x;
     for(int k=2; k<N; ++k) out[k] = 2*x*out[k-1] - out[k-2];
   };
-
-  // Scaled passbands and stopbands (scale=10) as Lobatto nodes.
   auto lobatto = [](double a, double b, int N){
     std::vector<double> out(N);
     if (N < 2) { out = {0.5*(a+b)}; return out; }
@@ -39,17 +44,17 @@ int main() {
     return out;
   };
 
-  const int NS = 40;
-  std::vector<std::pair<double,double>> pb = {{-0.1,-0.0625},{0.025,0.1}};
-  std::vector<std::pair<double,double>> sb = {{-1.0,-0.1188},{-0.05,0.0125},{0.1212,1.0}};
-  double psi_I = 0.1005;
-
-  std::vector<double> F, P;
-  for (auto [a,bb] : pb) {
-    for (double x : lobatto(a,bb,NS)) {
+  // Run at several sample counts to see where the cliff is.
+  for (int NS : {5, 8, 10, 12, 15, 20})
+  {
+  A.clear(); b.clear();
+  std::vector<std::pair<double,double>> pb = {{-1.0,-0.5},{0.5,1.0}};
+  std::vector<std::pair<double,double>> sb = {{-2.0,-1.2},{-0.3,0.3},{1.2,2.0}};
+  double psi_I = 1.0;   // classical Zolotarev, bound |F|<=|P|=1 trivially
+  std::vector<double> F;
+  for (auto iv : pb) {
+    for (double x : lobatto(iv.first, iv.second, NS)) {
       cheb(x, nF+1, F);
-      cheb(x, 4, P);
-      // F(x) <= psi_I  (no P)
       std::vector<double> row(n, 0);
       for (int i=0;i<nF+1;++i) row[i] = F[i];
       add(row, psi_I);
@@ -57,23 +62,25 @@ int main() {
       add(row, psi_I);
     }
   }
-  for (auto [a,bb] : sb) {
-    for (double y : lobatto(a,bb,NS)) {
+  for (auto iv : sb) {
+    for (double y : lobatto(iv.first, iv.second, NS)) {
       cheb(y, nF+1, F);
       std::vector<double> row(n, 0);
-      // sigma F(y) >= h  -> -sigma*F + h <= 0
+      // F(y) >= h  for sigma_J = +1
       for (int i=0;i<nF+1;++i) row[i] = -F[i];
       row[n-1] = 1;
       add(row, 0);
     }
   }
 
-  std::printf("LP size: %zu rows x %d cols\n", A.size(), n);
-
   auto t0 = clock::now();
   auto r = mlp::solve(c, lo, hi, A, b);
   auto dt = std::chrono::duration<double>(clock::now() - t0).count();
-  const char* s = r.status==mlp::Status::Optimal ? "OPT" : "NON-OPT";
-  std::printf("  %s  obj=%.4f  in %.3fs\n", s, r.objective, dt);
+  const char* s = r.status==mlp::Status::Optimal ? "OPT"
+                 : r.status==mlp::Status::Infeasible ? "INFEAS" : "UNBND";
+  std::printf("NS=%d rows=%zu  %s obj=%.4f  in %.3fs\n",
+              NS, A.size(), s, r.objective, dt);
+  if (dt > 5.0) { std::puts("  stopping scan (>5s)"); break; }
+  }
   return 0;
 }

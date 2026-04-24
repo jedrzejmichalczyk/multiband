@@ -11,7 +11,20 @@
 //
 // The core two-phase simplex is adapted from the gpt5.5 exploration:
 // dense tableau, Bland's rule tie-break on degenerate pivots, automatic
-// row and objective scaling.  Roughly 220 lines, no external deps.
+// row and objective scaling, plus an iteration cap so pathological inputs
+// return Status::Unbounded rather than hang.  ~260 lines, no external deps.
+//
+// IMPORTANT -- when NOT to use this:
+// Our multiband synthesis LPs sample smooth polynomials densely at
+// Chebyshev-Lobatto nodes, so adjacent sample rows are nearly parallel
+// (the rows differ by Chebyshev polynomial differences that are small).
+// The dense-tableau simplex degenerates on these (lots of tied pivot
+// ratios, slow progress through redundant vertices) and scales poorly:
+// empirically, native benchmarks go from <1 ms at 35 rows to >60 s at
+// 70 rows.  For LPs with more than ~50 rows you'll want a revised
+// simplex with LU updates or a sparse solver like HiGHS.  mini_lp is
+// kept in the tree because its API is clean and it's proven correct on
+// small LPs (see mini_lp_test.cpp).
 #pragma once
 
 #include <algorithm>
@@ -120,9 +133,13 @@ class TwoPhaseSimplex {
     std::swap(basis_[r], non_basis_[s]);
   }
 
+  // Returns true on optimal, false on unbounded or iteration cap.  The
+  // iteration cap is generous (200*(m+n)) but prevents indefinite hangs
+  // on degenerate LPs that Bland's rule alone can't escape quickly.
   bool simplex(int phase) {
     const int obj = phase == 1 ? m_ + 1 : m_;
-    while (true) {
+    const int pivot_cap = 200 * (m_ + n_);
+    for (int it = 0; it < pivot_cap; ++it) {
       int s = -1;
       for (int j = 0; j <= n_; ++j) {
         if (phase == 0 && non_basis_[j] == -1) continue;
@@ -144,6 +161,7 @@ class TwoPhaseSimplex {
       if (r == -1) return false;
       pivot(r, s);
     }
+    return false;  // iteration cap hit -- treat as "unbounded/stalled"
   }
 
   int m_, n_;
