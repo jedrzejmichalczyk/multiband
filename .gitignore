@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
 .claude/
+*.exe
+*.obj
+*.o
 
 # C++/CMake build outputs
 web/build-*/
