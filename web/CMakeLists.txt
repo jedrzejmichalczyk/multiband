@@ -19,8 +19,14 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 include(FetchContent)
 
 # ----- HiGHS ---------------------------------------------------------------
-# HiGHS is the LP backend.  We pull a specific stable tag so the build is
-# reproducible.  Tests off, shared libs off for a clean static link.
+# HiGHS is the LP backend.  We tried replacing it with the ~220-line
+# dense two-phase simplex in src/mini_lp.hpp (shrinks the WASM bundle
+# from 2.4 MB to 245 KB!) but the dense tableau scales as O(m^2 n) per
+# pivot, which is fine for the 100-row LPs used in lunot_gpt5.5 but
+# pathologically slow on our 500+ row LPs (minutes per solve instead of
+# milliseconds).  A sparse revised simplex would fix this -- out of
+# scope for now; HiGHS stays, mini_lp.hpp is kept for small LPs in
+# case it's useful later.
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(FAST_BUILD ON CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
@@ -35,10 +41,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(highs)
 
-# ----- nlohmann/json (header-only, vendored) -------------------------------
-# We include a single-header copy under third_party/ to avoid pulling another
-# dependency.  See third_party/nlohmann/json.hpp.
-
 # ----- Solver library ------------------------------------------------------
 add_library(zolo STATIC
   src/solver.cpp
@@ -47,7 +49,6 @@ add_library(zolo STATIC
 target_include_directories(zolo
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 target_link_libraries(zolo PUBLIC highs)
 target_compile_options(zolo PRIVATE

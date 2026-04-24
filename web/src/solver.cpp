@@ -141,10 +141,11 @@ static LPResult build_and_solve_lp(const std::vector<SamplePt>& I_pts,
   const int nvar = n_f + n_p + 1;
   const int h_idx = nvar - 1;
 
-  // Build column-compressed matrix incrementally as row triplets.
+  // Variable bounds:  F, P coefficients in [-coef_bound, coef_bound],
+  // h free.
   std::vector<double> col_lower(nvar, -coef_bound);
   std::vector<double> col_upper(nvar, +coef_bound);
-  col_lower[h_idx] = -kHighsInf;   // h free
+  col_lower[h_idx] = -kHighsInf;
   col_upper[h_idx] = +kHighsInf;
 
   std::vector<double> col_cost(nvar, 0.0);
@@ -253,11 +254,7 @@ static LPResult build_and_solve_lp(const std::vector<SamplePt>& I_pts,
     }
   }
 
-  // Use HiGHS's incremental addCol/addRow API.  When building the matrix
-  // by hand and submitting via passModel(), HiGHS was reading the sparse
-  // matrix in a way that misinterpreted either the format or start-array
-  // layout and returned spurious infeasible statuses.  The incremental
-  // API is both safer and closer to how scipy.optimize.linprog does it.
+  // Use HiGHS's incremental addCol/addRow API.
   Highs highs;
   highs.setOptionValue("output_flag", false);
 
@@ -277,13 +274,8 @@ static LPResult build_and_solve_lp(const std::vector<SamplePt>& I_pts,
     if (rc != HighsStatus::kOk) return {false, 0, {}, {}};
   }
 
-  HighsStatus st = HighsStatus::kOk;
-  st = highs.run();
-  if (st != HighsStatus::kOk) {
-    if (zolo_trace()) std::fprintf(stderr, "  LP run failed (status=%d)\n",
-                                   static_cast<int>(st));
-    return {false, 0, {}, {}};
-  }
+  HighsStatus st = highs.run();
+  if (st != HighsStatus::kOk) return {false, 0, {}, {}};
   HighsModelStatus ms = highs.getModelStatus();
   if (ms != HighsModelStatus::kOptimal) {
     if (zolo_trace())
@@ -299,7 +291,7 @@ static LPResult build_and_solve_lp(const std::vector<SamplePt>& I_pts,
   out.F.assign(sol.col_value.begin(), sol.col_value.begin() + n_f);
   out.P.assign(n_p + 1, 0.0);
   for (int i = 0; i < n_p; ++i) out.P[i] = sol.col_value[n_f + i];
-  out.P[n_p] = 1.0;   // pinned leading Chebyshev coefficient
+  out.P[n_p] = 1.0;
   return out;
 }
 
