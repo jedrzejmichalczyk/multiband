@@ -39,8 +39,18 @@ from numpy.polynomial import chebyshev as npch
 # -----------------------------------------------------------------------------
 
 def _chebyshev_nodes(a: float, b: float, n: int) -> np.ndarray:
+    """n Chebyshev-Lobatto nodes in [a, b], INCLUDING the endpoints.
+
+    First-kind nodes (cos((2k+1)pi/(2n))) leave a gap near both endpoints.
+    For stopband sampling that gap lets the LP park a reflection zero of
+    F *exactly on the truncation boundary* where the sign constraint is
+    not tested -- yielding spurious "optimal" filters with zeros on the
+    interval edge.  Lobatto nodes close that loophole.
+    """
+    if n < 2:
+        return np.array([0.5 * (a + b)])
     k = np.arange(n)
-    x = np.cos((2 * k + 1) * np.pi / (2 * n))
+    x = np.cos(np.pi * k / (n - 1))
     return 0.5 * (a + b) + 0.5 * (b - a) * x
 
 
@@ -212,14 +222,18 @@ def _probe_lp(passbands, stopbands, sigma_I, sigma_J, nF, nP,
     """Solve the LP at level M with the given reference F_ref (used in the
     quadratic-correction denominator of eq. 14).  A Remez-style exchange
     refines the sample sets until the continuous constraints are valid."""
+    # Fixed-count sampling per interval, no width scaling.  Width-scaled
+    # sampling over-constrains wide outer stopbands relative to narrow
+    # middle stopbands, biasing the LP's rejection allocation and
+    # converging to unbalanced solutions (lunot_gpt5.5 makes the same
+    # observation implicitly by using a flat `points_per_interval`).
+    n = max(6, base_samples)
     I_samples_set = []
     for k, (a, b) in enumerate(passbands):
-        for x in _chebyshev_nodes(a, b, max(6, base_samples)):
+        for x in _chebyshev_nodes(a, b, n):
             I_samples_set.append((x, sigma_I[k]))
     J_samples_set = []
     for k, (a, b) in enumerate(stopbands):
-        width = abs(b - a)
-        n = int(np.ceil(base_samples * max(1.0, 0.5 + np.log10(1 + 10 * width))))
         for y in _chebyshev_nodes(a, b, n):
             J_samples_set.append((y, sigma_J[k]))
 
@@ -336,29 +350,50 @@ def _solve_signed_diffcorr(passbands, stopbands, sigma_I, sigma_J, nF, nP,
 
     The `min` is computed densely (verification of the continuum).
     """
-    # Step 0: bootstrap (F_0, P_0).  We start at an M_{-1} that is
-    # guaranteed feasible, namely  -max(psi_J on J) - 1  (which makes
-    # Meff <= -1 and sigma F >= Meff|P| is trivially satisfied).  The
-    # paper's suggestion M_{-1}=1 fails when psi_J dominates.
+    # Step 0: bootstrap (F_0, P_0) by trying a sequence of initial M values
+    # that bracket the likely optimum from above.  This is the key trick
+    # the gpt5.5 port uses to escape the poor local optima we were hitting
+    # with a single safe-but-loose M_start = -psi_max-1.  For each M in
+    # the sequence we try the basic (non-quadratic) LP; the *first* M
+    # yielding h > tol becomes the seed.  Only if all positive margins
+    # fail do we fall back to the always-feasible M = -psi_max - 1.
     psi_J_max = 0.0
     for (a, b) in stopbands:
         for w in np.linspace(a, b, 11):
             psi_J_max = max(psi_J_max, psi_J_fn(w))
-    M_start = -psi_J_max - 1.0
+    initial_margins = (1.0, 0.3, 0.1, 0.03, 0.01, 0.0,
+                       -0.5 * max(psi_J_max, 1.0),
+                       -psi_J_max - 1.0)
 
-    h0, F_km1, P_km1 = _probe_lp(
-        passbands, stopbands, sigma_I, sigma_J, nF, nP,
-        M=M_start, psi_I_fn=psi_I_fn, psi_J_fn=psi_J_fn, F_ref=None,
-        coef_bound=coef_bound, base_samples=base_samples,
-        refine_samples=refine_samples, tol=tol, verbose=False,
-    )
+    # IMPORTANT: we disable the Remez exchange during initialisation.
+    # Starting from the Chebyshev-Lobatto samples, the first LP solve
+    # already gives a usable seed; adding violating points at this stage
+    # only tightens the problem until the LP becomes infeasible at the
+    # very margins we're trying to bracket.  The iterative DC below
+    # re-solves with F_ref updated, which effectively plays the exchange
+    # role for convergence.
+    h0, F_km1, P_km1, M_start = None, None, None, None
+    for trial_M in initial_margins:
+        h_try, F_try, P_try = _probe_lp(
+            passbands, stopbands, sigma_I, sigma_J, nF, nP,
+            M=trial_M, psi_I_fn=psi_I_fn, psi_J_fn=psi_J_fn, F_ref=None,
+            coef_bound=coef_bound, base_samples=base_samples,
+            refine_samples=refine_samples, max_exchange=1, tol=tol,
+            verbose=False,
+        )
+        if F_try is None:
+            continue
+        if h_try > tol or trial_M < 0:
+            h0, F_km1, P_km1, M_start = h_try, F_try, P_try, trial_M
+            if h_try > tol:
+                break
     if F_km1 is None:
         return None, None, -np.inf
     M_km1 = _min_signed_ratio_minus_psi(F_km1, P_km1, stopbands,
                                         sigma_J, psi_J_fn,
                                         n_samples=refine_samples)
     if verbose:
-        print(f"    init:  h0={h0:.3e}  M_0={M_km1:.4f}")
+        print(f"    init:  M_start={M_start:.3f} h0={h0:.3e}  M_0={M_km1:.4f}")
 
     best_F, best_P, best_M = F_km1, P_km1, M_km1
 
@@ -685,3 +720,95 @@ def rl_db_to_psi(rl_db: float) -> float:
 def rej_db_to_psi(rej_db: float) -> float:
     """Stopband rejection level (dB) -> baseline |F/P|."""
     return float(np.sqrt(10.0 ** (rej_db / 10.0) - 1.0))
+
+
+# -----------------------------------------------------------------------------
+# E(s) denominator: Feldtkeller spectral factorisation
+# -----------------------------------------------------------------------------
+#
+# From eq. (2) of the paper, E is the Hurwitz polynomial (all roots in the
+# open LHP of s = sigma + j*omega) satisfying
+#
+#     E(s) E*(s) = F(s) F*(s) + (-1)^(n+1) P(s)^2
+#
+# For real-coefficient F, P on the real omega axis with the substitution
+# s = j*omega, this reduces to
+#
+#     |E(j*omega)|^2 = F(omega)^2 + P(omega)^2 .
+#
+# Roots of E are the filter poles: the main downstream handoff to
+# coupling-matrix synthesis / physical CAD.
+
+
+def compute_E_polynomial(F_mono, P_mono):
+    """Compute the monic Hurwitz E(s) such that |E(j*omega)|^2 = F^2 + P^2.
+
+    Parameters
+    ----------
+    F_mono, P_mono : monomial coefficients in ascending order, real.
+
+    Returns
+    -------
+    dict with keys
+        E_s_coeffs : complex coefficients of E(s) (ascending order, deg nF).
+        poles      : array of E's roots (complex), sorted by |Im|.
+        residual   : relative L2 error of the spectral reconstruction
+                     (should be ~1e-10 if all is well).
+    """
+    F = np.trim_zeros(np.asarray(F_mono, dtype=float), 'b')
+    P = np.trim_zeros(np.asarray(P_mono, dtype=float), 'b')
+    if F.size == 0:
+        raise ValueError("F is zero")
+    nF = F.size - 1
+
+    # |E(j*omega)|^2 = F(omega)^2 + P(omega)^2, as a polynomial of omega.
+    FF = np.convolve(F, F)                          # F(omega)^2
+    PP = np.convolve(P, P)                          # P(omega)^2
+    L = max(FF.size, PP.size)
+    T = np.zeros(L)
+    T[:FF.size] += FF
+    T[:PP.size] += PP
+
+    # T(omega) is >= 0 on the real axis with deg 2*nF.  Find its 2*nF complex
+    # roots, then convert each root  omega_k  to  s_k = j*omega_k.  The s-
+    # roots come in pairs (s, -conj(s)); E's roots are the ones with
+    # Re(s) < 0.
+    roots_omega = np.roots(T[::-1])
+    roots_s = 1j * roots_omega
+
+    lhp = [r for r in roots_s if r.real < -1e-12]
+    if len(lhp) != nF:
+        # Tolerance case: some roots may sit on the j-axis (T vanishing at a
+        # real point because F and P share a zero).  Split them off by
+        # preferring those with negative real part.
+        roots_sorted = sorted(roots_s, key=lambda r: r.real)
+        lhp = roots_sorted[:nF]
+
+    # Build E from its roots (LHP) as a monic polynomial first.
+    E = np.poly(lhp)[::-1].astype(np.complex128)   # ascending order, monic
+
+    # Spectral match: |E(j*omega)|^2 must equal T(omega) pointwise.  Since
+    # both sides are degree-2nF polynomials of omega^2, matching the
+    # leading coefficient is enough.  deg(T) = 2 nF with leading coefficient
+    # = F_lead^2 (P has degree < nF, so it's sub-leading), and a monic E
+    # gives leading |E(j omega)|^2 = omega^(2 nF).  Hence we multiply E by
+    # |F_lead| to match.
+    F_lead = float(F[-1])
+    E = E * abs(F_lead)
+
+    # Verification on a dense grid spanning the band edges.
+    if F_lead != 0:
+        ws = np.linspace(-2.0, 2.0, 401)
+        Ej = np.polyval(E[::-1], 1j * ws)
+        lhs = (Ej * np.conjugate(Ej)).real
+        rhs = np.polyval(T[::-1], ws)
+        residual = float(np.linalg.norm(lhs - rhs)
+                         / max(np.linalg.norm(rhs), 1e-30))
+    else:
+        residual = float('nan')
+
+    return {
+        "E_s_coeffs": E,
+        "poles": np.array(sorted(lhp, key=lambda r: (abs(r.imag), r.real))),
+        "residual": residual,
+    }

@@ -97,11 +97,15 @@ static double polyval(const std::vector<double>& c, double x) {
   return acc;
 }
 
-// Chebyshev nodes of the first kind in [a, b].
+// Chebyshev-Lobatto nodes (INCLUDE the endpoints).  First-kind nodes
+// leave a gap near both boundaries which the LP can exploit by placing a
+// reflection zero exactly on a truncation edge, giving spurious "optimal"
+// filters -- Lobatto closes that loophole.
 static std::vector<double> chebyshev_nodes(double a, double b, int n) {
+  if (n < 2) return {0.5 * (a + b)};
   std::vector<double> out(n);
   for (int k = 0; k < n; ++k) {
-    double c = std::cos((2.0 * k + 1.0) * M_PI / (2.0 * n));
+    double c = std::cos(M_PI * k / (n - 1));
     out[k] = 0.5 * (a + b) + 0.5 * (b - a) * c;
   }
   return out;
@@ -312,17 +316,17 @@ probe_lp(const Spec& spec,
          double M,
          const std::vector<double>* F_ref,
          const PsiFn& psi_I, const PsiFn& psi_J) {
+  // Fixed-count sampling per interval (no width scaling).  Width scaling
+  // over-constrains wide outer stopbands relative to narrow middle
+  // stopbands and biases the LP's rejection allocation.
+  const int n_pts = std::max(6, spec.base_samples);
   std::vector<SamplePt> I_pts, J_pts;
   for (size_t k = 0; k < passbands.size(); ++k) {
-    auto xs = chebyshev_nodes(passbands[k].a, passbands[k].b,
-                              std::max(6, spec.base_samples));
+    auto xs = chebyshev_nodes(passbands[k].a, passbands[k].b, n_pts);
     for (double x : xs) I_pts.push_back({x, sigma_I[k]});
   }
   for (size_t k = 0; k < stopbands.size(); ++k) {
-    double w = std::abs(stopbands[k].b - stopbands[k].a);
-    int n = static_cast<int>(std::ceil(
-        spec.base_samples * std::max(1.0, 0.5 + std::log10(1.0 + 10.0 * w))));
-    auto ys = chebyshev_nodes(stopbands[k].a, stopbands[k].b, n);
+    auto ys = chebyshev_nodes(stopbands[k].a, stopbands[k].b, n_pts);
     for (double y : ys) J_pts.push_back({y, sigma_J[k]});
   }
 
@@ -429,7 +433,10 @@ static SignedResult solve_signed(const Spec& spec,
                                  const std::vector<int>& sJ,
                                  const PsiFn& psi_I,
                                  const PsiFn& psi_J) {
-  // Step 0: probe at a guaranteed-feasible M_{-1}.
+  // Step 0: try a sequence of initial M values (gpt5.5-style) --
+  // start aggressive (M=1) and relax until the first LP probe gives
+  // h>tol; fall back to an always-feasible M_{-1} = -psi_max - 1 only
+  // when every positive margin fails.
   double psi_J_max = 0.0;
   for (const auto& iv : sb) {
     for (int i = 0; i < 11; ++i) {
@@ -437,10 +444,23 @@ static SignedResult solve_signed(const Spec& spec,
       psi_J_max = std::max(psi_J_max, psi_J(w));
     }
   }
-  double M_start = -psi_J_max - 1.0;
+  const double initial_margins[] = {
+      1.0, 0.3, 0.1, 0.03, 0.01, 0.0,
+      -0.5 * std::max(psi_J_max, 1.0),
+      -psi_J_max - 1.0,
+  };
 
-  auto [h0, F_km1, P_km1] = probe_lp(spec, pb, sb, sI, sJ, M_start, nullptr,
-                                     psi_I, psi_J);
+  double h0 = -INFINITY, M_start = 0;
+  std::vector<double> F_km1, P_km1;
+  for (double trial_M : initial_margins) {
+    auto [h_try, F_try, P_try] = probe_lp(spec, pb, sb, sI, sJ, trial_M,
+                                          nullptr, psi_I, psi_J);
+    if (F_try.empty()) continue;
+    if (h_try > spec.tol || trial_M < 0) {
+      h0 = h_try; F_km1 = F_try; P_km1 = P_try; M_start = trial_M;
+      if (h_try > spec.tol) break;
+    }
+  }
   if (F_km1.empty()) {
     if (zolo_trace()) std::fprintf(stderr, "    init probe failed\n");
     return {};
