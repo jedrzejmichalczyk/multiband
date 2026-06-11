@@ -85,7 +85,9 @@ def plot_response(sol, title, filename, w_range=(-2.1, 2.1), y_range=(-80, 0),
 def summarise(sol, passbands, stopbands, psi_I_fn, psi_J_fn):
     F, P = sol["F"], sol["P"]
     print(f"  sigma_I = {sol['sigma_I']}   sigma_J = {sol['sigma_J']}")
-    print(f"  M (slack above spec psi_J) = {sol['M']:.4f}")
+    print(f"  M (min |F/P| / w_J) = {sol['M']:.4f}"
+          + (f"  (uniform stopband margin {20*np.log10(sol['M']):+.2f} dB)"
+             if sol['M'] > 0 else ""))
     # Compute min rejection per stopband
     for (a, b) in stopbands:
         ws = np.linspace(a, b, 20000)
@@ -128,7 +130,7 @@ def example1():
         passbands, stopbands, nF=9, nP=3,
         psi_I=psi_I, psi_J=psi_J,
         rescale=True, method="diffcorr",
-        base_samples=40, coef_bound=1e6,
+        base_samples=30, coef_bound=1e8,
         bisection_tol=1e-5, verbose=False,
     )
     print(f"  solved in {time.time() - t0:.2f} s")
@@ -179,7 +181,7 @@ def example2():
         passbands, stopbands, nF=7, nP=3,
         psi_I=psi_I, psi_J=psi_J,
         rescale=True, method="diffcorr",
-        base_samples=40, coef_bound=1e6,
+        base_samples=30, coef_bound=1e8,
         bisection_tol=1e-5, verbose=False,
     )
     print(f"  solved in {time.time() - t0:.2f} s")

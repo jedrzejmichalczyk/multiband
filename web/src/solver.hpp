@@ -34,13 +34,15 @@ struct Spec {
   int nF = 0;                        // reflection-zero count (deg F)
   int nP = 0;                        // transmission-zero count (deg P)
   PsiFn psi_I;                       // passband |F/P| <= psi_I(w)
-  PsiFn psi_J;                       // stopband baseline: |F/P| >= M + psi_J(w)
+  PsiFn psi_J;                       // stopband target: criterion is
+                                     // min |F/P| / w_J, w_J = psi_J>0 ? psi_J : 1
   bool rescale = true;               // map intervals into [-1, 1]
-  int base_samples = 40;             // initial Chebyshev samples per interval
+  int base_samples = 30;             // initial Chebyshev samples per interval
   int refine_samples = 3000;         // dense grid for Remez verification
   int max_iter = 30;                 // diff-correction iteration cap
   int max_exchange = 12;             // Remez exchange cap per LP
-  double coef_bound = 1e6;           // box bound on Chebyshev coefficients
+  int max_kick_probes = 24;          // feasibility-kick probes per sign combo
+  double coef_bound = 1e8;           // box bound on Chebyshev coefficients
   double tol = 1e-5;                 // convergence / feasibility tolerance
 };
 
@@ -51,10 +53,25 @@ struct Result {
   std::string message;
   std::vector<double> F_mono;
   std::vector<double> P_mono;
-  double M = -INFINITY;              // best slack above psi_J achieved
+  double M = -INFINITY;              // best weighted criterion achieved,
+                                     // min_J |F/P| / w_J (dense-verified);
+                                     // 20*log10(M) = uniform dB margin
+                                     // over the per-band targets
+  // Certified upper bound: no candidate of this degree beats it even on
+  // the sampled problem (max over the per-sign infeasibility
+  // certificates; +inf if a sign combination ran out of probe budget
+  // before producing one).
+  double M_upper = INFINITY;
   std::vector<int> sigma_I;
   std::vector<int> sigma_J;
   double scale = 1.0;
+  // Alternation certificate (paper §IV.B): the optimum is certified
+  // equiripple-optimal when the residual alternates on at least
+  // nF + nP + 2 points across I u J.
+  int alt_count = 0;                 // longest alternating run found
+  int alt_required = 0;              // nF + nP + 2
+  std::vector<double> alt_omega;     // alternation points (original omega)
+  std::vector<int> alt_sign;         // +1 / -1 residual sign at each point
 };
 
 // --- Main solver ------------------------------------------------------------
@@ -93,7 +110,11 @@ void set_trace(bool v);
 //    "evaluation_omega": [-2.0,-1.9,...,2.0]}
 // Output:
 //   {"success": true/false, "message": "...",
-//    "F_mono": [...], "P_mono": [...], "M": ...,
+//    "F_mono": [...], "P_mono": [...],
+//    "M": ...,                       // min |F/P| / w_J, dense-verified
+//    "M_upper": ...,                 // certified bound (omitted if none)
+//    "alternation": {"count": n, "required": nF+nP+2,
+//                    "certified": bool, "points": [[w, sign], ...]},
 //    "sigma_I": [...], "sigma_J": [...],
 //    "scale": 10.0,
 //    "response": {"omega":[...], "S21_dB":[...], "S11_dB":[...]}}

@@ -130,7 +130,7 @@ function buildSpec() {
       psi_I_db,
       psi_J_default_db: 0,
       psi_J_pieces,
-      base_samples: 40,
+      base_samples: 30,
       evaluation_omega: linspace(lo, hi, 2400),
     },
     passbands,
@@ -302,6 +302,7 @@ function renderPlot(result, ctx) {
 }
 
 function renderSummary(result, ctx) {
+  let allOk = true;
   // passbands
   let html = "<thead><tr><th>Interval</th><th>target RL</th><th>achieved RL</th></tr></thead><tbody>";
   for (const b of ctx.passbands) {
@@ -311,6 +312,7 @@ function renderSummary(result, ctx) {
       ? -20 * Math.log10(max / Math.sqrt(1 + max * max))
       : Infinity;
     const ok = rlAch + 0.05 >= b.rl_db;  // slight tol for sampling
+    allOk = allOk && ok;
     html += `<tr>
       <td>[${b.a.toFixed(3)}, ${b.b.toFixed(3)}]</td>
       <td class="num">${b.rl_db.toFixed(1)} dB</td>
@@ -326,6 +328,7 @@ function renderSummary(result, ctx) {
     const { min } = minAbsDOverInterval(result.F_mono, result.P_mono, s.a, s.b);
     const rejAch = rejDBFromD(min);
     const ok = rejAch + 0.05 >= s.rej_db;
+    allOk = allOk && ok;
     html += `<tr>
       <td>[${s.a.toFixed(3)}, ${s.b.toFixed(3)}]</td>
       <td class="num">${s.rej_db.toFixed(1)} dB</td>
@@ -334,6 +337,7 @@ function renderSummary(result, ctx) {
   }
   html += "</tbody>";
   els.tblStop.innerHTML = html;
+  return allOk;
 }
 
 function renderZeros(result) {
@@ -348,17 +352,41 @@ function renderZeros(result) {
     "P_mono = [\n  " + result.P_mono.map((x) => x.toExponential(6)).join(",\n  ") + "\n]";
 }
 
-function renderMBadge(M, ctx) {
-  // M = min over stopbands of (|F/P| − ψ_J).  If ≥0 every target is met.
+function renderMBadge(result, ctx, allOk) {
+  const M = result.M;
+  // M = min over stopbands of |F/P| / w_J (the paper's multiplicatively
+  // weighted criterion): for bands with a dB target, 20 log10(M) is the
+  // uniform margin by which every target is exceeded (negative: missed).
+  // Whether the spec is met is judged from the per-band dense analysis
+  // (allOk), since 0 dB-target bands carry weight 1.
   els.mBadge.classList.remove("ok", "fail");
+  const marginDb = M > 0 ? ` (≈ ${(20 * Math.log10(M)).toFixed(2)} dB uniform stopband margin)` : "";
   let html, cls;
-  if (M >= 0) {
-    html = `M = +${M.toFixed(3)} &nbsp;·&nbsp; every stopband target is met (with slack)`;
+  if (allOk) {
+    html = `M = ${M.toFixed(4)}${marginDb} &nbsp;·&nbsp; every band target is met`;
     cls = "ok";
   } else {
-    html = `M = ${M.toFixed(3)} &nbsp;·&nbsp; a ${ctx.nF}-${ctx.nP} filter cannot meet every target simultaneously`;
+    html = `M = ${M.toFixed(4)}${marginDb} &nbsp;·&nbsp; a ${ctx.nF}-${ctx.nP} filter cannot meet every target simultaneously`;
     cls = "fail";
   }
+
+  // Optimality certificate: the achieved M is dense-verified; M_upper is
+  // the level the LP feasibility probes certified unbeatable; the
+  // alternation count is the paper's §IV.B equiripple criterion.
+  const certBits = [];
+  if (Number.isFinite(result.M_upper)) {
+    certBits.push(`certified bracket ${M.toFixed(3)} ≤ M✱ ≤ ${result.M_upper.toFixed(3)}`);
+  }
+  const alt = result.alternation;
+  if (alt) {
+    certBits.push(alt.certified
+      ? `${alt.count}/${alt.required} alternation points — equiripple-certified optimal`
+      : `${alt.count}/${alt.required} alternation points`);
+  }
+  if (certBits.length) {
+    html += `<div class="cert">${certBits.join(" &nbsp;·&nbsp; ")}</div>`;
+  }
+
   els.mBadge.innerHTML = html;
   els.mBadge.classList.add(cls);
 }
@@ -387,9 +415,9 @@ async function runSolver() {
     els.status.className = "";
     els.status.textContent = `solved in ${dt.toFixed(2)} s  (σ_I=[${result.sigma_I}], σ_J=[${result.sigma_J}])`;
 
-    renderMBadge(result.M, built);
     renderPlot(result, built);
-    renderSummary(result, built);
+    const allOk = renderSummary(result, built);
+    renderMBadge(result, built, allOk);
     renderZeros(result);
   } catch (e) {
     els.status.className = "warn";

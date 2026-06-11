@@ -103,12 +103,15 @@ std::string solve_json(const std::string& spec_json) {
 
     if (in.contains("trace")) set_trace(in.at("trace").as_bool());
     else set_trace(false);
-    spec.base_samples   = in.value_int("base_samples",   spec.base_samples);
-    spec.refine_samples = in.value_int("refine_samples", spec.refine_samples);
-    spec.max_iter       = in.value_int("max_iter",       spec.max_iter);
-    spec.coef_bound     = in.value_num("coef_bound",     spec.coef_bound);
-    spec.tol            = in.value_num("tol",            spec.tol);
-    spec.rescale        = in.value_bool("rescale",       spec.rescale);
+    spec.base_samples    = in.value_int("base_samples",    spec.base_samples);
+    spec.refine_samples  = in.value_int("refine_samples",  spec.refine_samples);
+    spec.max_iter        = in.value_int("max_iter",        spec.max_iter);
+    spec.max_exchange    = in.value_int("max_exchange",    spec.max_exchange);
+    spec.max_kick_probes = in.value_int("max_kick_probes",
+                                        spec.max_kick_probes);
+    spec.coef_bound      = in.value_num("coef_bound",      spec.coef_bound);
+    spec.tol             = in.value_num("tol",             spec.tol);
+    spec.rescale         = in.value_bool("rescale",        spec.rescale);
 
     Result r = solve_zolotarev(spec);
 
@@ -118,9 +121,26 @@ std::string solve_json(const std::string& spec_json) {
       out["F_mono"] = mjson::Value(to_array(r.F_mono));
       out["P_mono"] = mjson::Value(to_array(r.P_mono));
       out["M"]      = mjson::Value(r.M);
+      // JSON has no Infinity literal; omit M_upper when no certificate
+      // was obtained.
+      if (std::isfinite(r.M_upper)) out["M_upper"] = mjson::Value(r.M_upper);
       out["scale"]  = mjson::Value(r.scale);
       out["sigma_I"] = mjson::Value(to_array(r.sigma_I));
       out["sigma_J"] = mjson::Value(to_array(r.sigma_J));
+
+      mjson::Value alt;
+      alt["count"]     = mjson::Value(static_cast<double>(r.alt_count));
+      alt["required"]  = mjson::Value(static_cast<double>(r.alt_required));
+      alt["certified"] = mjson::Value(r.alt_count >= r.alt_required);
+      mjson::Array alt_pts;
+      for (size_t i = 0; i < r.alt_omega.size(); ++i) {
+        mjson::Array pt;
+        pt.emplace_back(r.alt_omega[i]);
+        pt.emplace_back(static_cast<double>(r.alt_sign[i]));
+        alt_pts.emplace_back(std::move(pt));
+      }
+      alt["points"] = mjson::Value(std::move(alt_pts));
+      out["alternation"] = alt;
 
       if (in.contains("evaluation_omega")) {
         std::vector<double> w;
