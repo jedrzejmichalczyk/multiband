@@ -36,7 +36,7 @@ set(FORTRAN OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   highs
   GIT_REPOSITORY https://github.com/ERGO-Code/HiGHS.git
-  GIT_TAG v1.7.2
+  GIT_TAG v1.13.1
   GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(highs)

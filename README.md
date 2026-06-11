@@ -22,8 +22,9 @@ equiripple-like alternation certificate for global optimality.
   is the whole point of the Lunot et al. 2008 paper.
 - The solver returns a characteristic function
   `D(ω) = F(ω) / P(ω)` (real-coefficient polynomials) that
-  maximises the worst-case slack above the stopband targets while
-  respecting the passband return-loss constraint.
+  maximises the worst-case dB margin over the stopband targets while
+  respecting the passband return-loss constraint, and certifies a
+  bracket `M ≤ M* ≤ M_upper` around the optimum.
 - You get: `|S₂₁|`, `|S₁₁|` trace on a dB plot with target lines
   overlaid, a per-band achieved-vs-target table (green = met,
   red = missed), the list of reflection / transmission zeros, and
@@ -44,27 +45,52 @@ these plots:
 
 The Zolotarev problem posed by the paper is
 
-> maximise `M = min_{ω∈J} (|F/P| − ψ_J(ω))` subject to `|F/P| ≤ ψ_I(ω)` on `I`
+> maximise `M = min_{ω∈J} |F/P| / w_J(ω)` subject to `|F/P| ≤ ψ_I(ω)` on `I`
 
-where `ψ_I`, `ψ_J` come from the user's dB specs.  For each sign
-combination on the intervals:
+where `ψ_I`, `ψ_J` come from the user's dB specs and the stopband
+weight is `w_J = ψ_J` where a target is given, else 1 (§V.D of the
+paper: the rejection target enters *multiplicatively*, so the optimum
+exceeds every band's target by the same dB margin `20·log10 M` and
+every band stays binding).  For each sign combination on the
+intervals:
 
-1. **Sample** the intervals on Chebyshev nodes.
+1. **Sample** the intervals on Chebyshev-Lobatto nodes.
 2. Assemble an LP whose variables are the Chebyshev coefficients of
    `F` and `P`, plus the scalar slack `h`.
 3. Solve the LP with [HiGHS](https://highs.dev) (same solver
    `scipy.optimize.linprog` uses under the hood).
 4. **Remez-style exchange**: densely sample between the Chebyshev
    nodes; any point violating the continuous constraint joins the
-   sample set and we re-solve.  Iterate until the solution is valid
-   on the whole continuum.
+   sample set and we re-solve from scratch (warm-starting from the
+   previous basis was measured to produce false infeasibility
+   verdicts on this ill-conditioned model).  Iterate until the
+   solution is valid on the whole continuum.
 5. Iterate the differential correction of eq. (14) in the paper
    (with the `|F_{k-1}|` denominator, which gives quadratic
    convergence near the optimum).
+6. **Feasibility-kick refinement.**  The DC iteration alone is
+   vertex-luck-sensitive: the LP has massively degenerate optimal
+   faces, and which vertex the solver happens to return decides which
+   valley DC follows (the same spec has been observed converging to
+   `M = 1.62` with one HiGHS build and `M = 15.16` with another).
+   After DC stalls, the solver probes the *convex* feasibility test
+   "does a candidate with slack > L exist?" at levels above the
+   incumbent: a feasible probe yields a strictly better witness (DC
+   resumes from it, kick doubles — geometric climb), an infeasible
+   one is a certificate that no candidate beats `L`.  Probes are
+   cross-checked under both `h` normalisations and both `σ_J`
+   mirrors, so a certificate requires four independent solver runs
+   to agree.
+7. Every accepted candidate is **dense-verified**: it is rescaled
+   (`F → F/ratio`) so the return-loss constraint holds on the whole
+   continuum, not just at LP samples, and its reported `M` is the
+   dense minimum over the stopbands.
 
 The winning sign combination is the one with the largest certified M.
-An alternation-point count (≥ `nF + nP + 2`) certifies optimality
-per §IV.B of the paper.
+The result reports the bracket `M ≤ M* ≤ M_upper` together with the
+alternation-point count (≥ `nF + nP + 2` certifies equiripple
+optimality per §IV.B of the paper); both appear in the UI under the
+M badge.
 
 ## Repository layout
 
